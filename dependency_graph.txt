@@ -1,0 +1,158 @@
+# Dependency Graph for Continuous Batching Implementation
+# Format: PR-XXX -> PR-YYY means PR-XXX must be completed before PR-YYY
+
+# ============================================================================
+# PHASE 1: Foundation (No dependencies)
+# ============================================================================
+
+PR-001 (Error Handling & Dependencies)
+  |
+  +----> PR-002 (Model Config)
+  |
+  +----> PR-003 (KV Cache)
+  |
+  +----> PR-004 (Sequence State) [also depends on PR-003]
+  |
+  +----> PR-005 (Scheduler) [also depends on PR-004]
+  |
+  +----> PR-006 (Model Interface Stub) [also depends on PR-002, PR-003]
+
+
+# ============================================================================
+# PHASE 2: Core Implementation
+# ============================================================================
+
+PR-002 (Model Config)
+  |
+  +----> PR-006 (Model Interface Stub)
+
+PR-003 (KV Cache)
+  |
+  +----> PR-004 (Sequence State)
+  |
+  +----> PR-006 (Model Interface Stub)
+
+PR-004 (Sequence State)
+  |
+  +----> PR-005 (Scheduler)
+
+PR-005 (Scheduler)
+  |
+  +----> PR-007 (Model Worker)
+
+PR-006 (Model Interface Stub)
+  |
+  +----> PR-007 (Model Worker)
+  |
+  +----> PR-008 (Full Model Implementation)
+
+
+# ============================================================================
+# PHASE 3: Worker & Model
+# ============================================================================
+
+PR-007 (Model Worker)
+  |
+  +----> PR-009 (Integration Tests)
+  |
+  +----> PR-010 (Advanced Sampling) [parallel with PR-011]
+  |
+  +----> PR-011 (Performance Metrics) [parallel with PR-010]
+
+PR-008 (Full Model Implementation)
+  |
+  +----> PR-009 (Integration Tests)
+
+
+# ============================================================================
+# PHASE 4: Polish & Extensions
+# ============================================================================
+
+PR-009 (Integration Tests) [depends on PR-007 AND PR-008]
+
+PR-010 (Advanced Sampling) [depends on PR-007 only, can start before PR-008]
+
+PR-011 (Performance Metrics) [depends on PR-007 only, can start before PR-008]
+
+
+# ============================================================================
+# DEPENDENCY MATRIX
+# ============================================================================
+#
+# PR    | Depends On
+# ------|----------------------------------------------------------
+# PR-001| (none - foundation)
+# PR-002| PR-001
+# PR-003| PR-001
+# PR-004| PR-001, PR-003
+# PR-005| PR-001, PR-004
+# PR-006| PR-001, PR-002, PR-003
+# PR-007| PR-001, PR-005, PR-006
+# PR-008| PR-006
+# PR-009| PR-007, PR-008
+# PR-010| PR-007
+# PR-011| PR-007
+#
+# ============================================================================
+# CRITICAL PATH (minimum time to complete all core features)
+# ============================================================================
+#
+# PR-001 -> PR-002 -> PR-006 -> PR-007 -> PR-008 -> PR-009
+#            |                    ^
+#            v                    |
+#          PR-003 -> PR-004 -> PR-005
+#
+# Total PRs on critical path: 9
+# Can be parallelized: PR-002 & PR-003, PR-010 & PR-011
+#
+# ============================================================================
+# RECOMMENDED IMPLEMENTATION ORDER
+# ============================================================================
+#
+# Week 1:
+#   - PR-001 (Foundation)
+#   - PR-002 & PR-003 in parallel (Config & KV Cache)
+#
+# Week 2:
+#   - PR-004 (Sequence State)
+#   - PR-005 (Scheduler)
+#   - PR-006 (Model Stub)
+#
+# Week 3:
+#   - PR-007 (Model Worker)
+#   - Start PR-008 (Model Implementation - longest task)
+#
+# Week 4-5:
+#   - Complete PR-008 (Model Implementation)
+#   - PR-010 & PR-011 in parallel (Sampling & Metrics)
+#
+# Week 6:
+#   - PR-009 (Integration Tests)
+#   - Final polish and documentation
+#
+# ============================================================================
+# PARALLEL WORK OPPORTUNITIES
+# ============================================================================
+#
+# After PR-001:
+#   - PR-002 and PR-003 are independent -> 2 developers can work in parallel
+#
+# After PR-007:
+#   - PR-008 (model implementation) is independent from PR-010 and PR-011
+#   - While one developer works on complex model math (PR-008)
+#   - Another can implement sampling (PR-010) and metrics (PR-011)
+#
+# ============================================================================
+# TESTING STRATEGY
+# ============================================================================
+#
+# Unit Tests Added In:
+#   - PR-004: Sequence lifecycle tests
+#   - PR-005: Scheduler logic tests
+#   - PR-010: Sampling strategy tests
+#
+# Integration Tests:
+#   - PR-007: Basic worker tests with stub model
+#   - PR-009: Full end-to-end tests with real model
+#
+# ============================================================================
