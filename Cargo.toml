@@ -1,6 +1,16 @@
 [package]
 name = "batching-rs"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+anyhow = "1.0"
+thiserror = "1.0"
+
+# MLX will be required for actual model implementation (PR-008)
+# For now, we'll add the dependency without building to establish the error handling
+mlx-rs = { version = "0.25", optional = true }
+
+[features]
+default = []
+mlx = ["mlx-rs"]
