@@ -55,16 +55,16 @@ impl From<mlx_rs::error::Exception> for BatchingError {
 /// Result type alias for continuous batching operations
 pub type Result<T> = std::result::Result<T, BatchingError>;
 
-// Module declarations (to be implemented in subsequent PRs)
-// pub mod config;
+// Module declarations
+pub mod config;
 // pub mod sequence;
 // pub mod kv_cache;
 // pub mod scheduler;
 // pub mod model;
 // pub mod worker;
 
-// Re-exports (to be uncommented as modules are implemented)
-// pub use config::ModelConfig;
+// Re-exports
+pub use config::ModelConfig;
 // pub use sequence::{Sequence, SeqId, SequenceStatus};
 // pub use kv_cache::{LayerKVCache, SequenceKVCache};
 // pub use scheduler::Scheduler;
