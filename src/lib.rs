@@ -58,17 +58,17 @@ pub type Result<T> = std::result::Result<T, BatchingError>;
 // Module declarations
 pub mod config;
 pub mod kv_cache;
+pub mod model;
 pub mod scheduler;
 pub mod sequence;
-// pub mod model;
 // pub mod worker;
 
 // Re-exports
 pub use config::ModelConfig;
 pub use kv_cache::{LayerKVCache, SequenceKVCache};
+pub use model::LlamaModel;
 pub use scheduler::{Scheduler, SchedulerDecision};
 pub use sequence::{SeqId, Sequence, SequenceStatus};
-// pub use model::LlamaModel;
 // pub use worker::ModelWorker;
 
 #[cfg(test)]
