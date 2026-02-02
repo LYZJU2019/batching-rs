@@ -7,10 +7,20 @@ edition = "2021"
 anyhow = "1.0"
 thiserror = "1.0"
 
-# MLX will be required for actual model implementation (PR-008)
-# For now, we'll add the dependency without building to establish the error handling
+# MLX for actual model implementation
 mlx-rs = { version = "0.25", optional = true }
+
+[dev-dependencies]
+# For integration tests with real models
+tokenizers = "0.20"  # HuggingFace tokenizers for Llama
+reqwest = { version = "0.12", features = ["blocking"] }  # For downloading models
+tempfile = "3.0"  # For temporary model storage
 
 [features]
 default = []
 mlx = ["mlx-rs"]
+# Feature flag for integration tests with real tokenizers
+# Run with: cargo test --features real-models
+# Note: Full MLX support requires macOS SDK >= 14.0
+real-models = []  # Removed mlx dependency for now
+real-models-mlx = ["mlx", "real-models"]  # Future: when SDK is updated
