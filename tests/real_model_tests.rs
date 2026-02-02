@@ -144,6 +144,167 @@ fn get_hf_token() -> anyhow::Result<String> {
     )
 }
 
+/// Download model weights from HuggingFace
+fn download_model_weights(repo_id: &str, model_files: &[&str]) -> anyhow::Result<PathBuf> {
+    let cache_dir = get_cache_dir()
+        .join("models")
+        .join(repo_id.replace("/", "--"));
+    std::fs::create_dir_all(&cache_dir)?;
+
+    println!("\n📦 Downloading model: {}", repo_id);
+    println!("📁 Cache directory: {}", cache_dir.display());
+
+    let token = get_hf_token().ok(); // Token is optional for public models
+
+    for file_name in model_files {
+        let file_path = cache_dir.join(file_name);
+
+        if file_path.exists() {
+            println!("  ✓ {} (cached)", file_name);
+            continue;
+        }
+
+        println!("  ⬇ Downloading {}...", file_name);
+
+        let url = format!(
+            "https://huggingface.co/{}/resolve/main/{}",
+            repo_id, file_name
+        );
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(600)) // 10 minute timeout for large files
+            .build()?;
+
+        let mut request = client.get(&url);
+
+        if let Some(ref token) = token {
+            request = request.header("Authorization", format!("Bearer {}", token));
+        }
+
+        let response = request.send()?;
+
+        if response.status() == reqwest::StatusCode::FORBIDDEN {
+            anyhow::bail!(
+                "❌ 403 Forbidden: Your HuggingFace account doesn't have access to {}.\n\n\
+                 To fix this:\n\
+                 1. Go to: https://huggingface.co/{}\n\
+                 2. Click 'Request Access' and accept the terms\n\
+                 3. Wait for approval (usually takes a few hours)\n\
+                 4. Then run the tests again\n",
+                repo_id,
+                repo_id
+            );
+        }
+
+        if !response.status().is_success() {
+            anyhow::bail!(
+                "Failed to download {}: HTTP {}",
+                file_name,
+                response.status()
+            );
+        }
+
+        // Get content length for progress tracking
+        let total_size = response.content_length().unwrap_or(0);
+        println!("    Size: {:.2} MB", total_size as f64 / 1_048_576.0);
+
+        let bytes = response.bytes()?;
+        std::fs::write(&file_path, bytes)?;
+
+        println!("    ✓ Downloaded successfully");
+    }
+
+    println!("✅ Model download complete\n");
+
+    Ok(cache_dir)
+}
+
+/// Download Llama 3.2 3B model (smaller, faster for testing) in GGUF format
+fn download_llama3_2_3b_model() -> anyhow::Result<PathBuf> {
+    let model_files = vec![
+        "config.json",
+        "Llama-3.2-3B-Instruct-Q4_K_M.gguf", // GGUF format with Q4_K_M quantization
+        "tokenizer.json",
+        "tokenizer_config.json",
+    ];
+
+    // Use a GGUF-compatible repo (e.g., from TheBloke or bartowski)
+    download_model_weights("bartowski/Llama-3.2-3B-Instruct-GGUF", &model_files)
+}
+
+/// Download Llama 3.2 1B model (smallest, fastest for testing) in GGUF format
+fn download_llama3_2_1b_model() -> anyhow::Result<PathBuf> {
+    let model_files = vec![
+        "config.json",
+        "Llama-3.2-1B-Instruct-Q4_K_M.gguf", // GGUF format with Q4_K_M quantization
+        "tokenizer.json",
+        "tokenizer_config.json",
+    ];
+
+    download_model_weights("bartowski/Llama-3.2-1B-Instruct-GGUF", &model_files)
+}
+
+/// Download GPT-2 model in GGUF format (public, no approval needed)
+fn download_gpt2_model() -> anyhow::Result<PathBuf> {
+    let model_files = vec![
+        "config.json",
+        "gpt2-Q4_K_M.gguf", // GGUF format
+        "tokenizer.json",
+        "vocab.json",
+        "merges.txt",
+    ];
+
+    download_model_weights("afrideva/gpt2-GGUF", &model_files)
+}
+
+/// Download Phi-2 model in GGUF format (smaller Microsoft model, good for testing)
+fn download_phi2_model() -> anyhow::Result<PathBuf> {
+    let model_files = vec![
+        "config.json",
+        "phi-2-Q4_K_M.gguf", // GGUF format
+        "tokenizer.json",
+        "tokenizer_config.json",
+    ];
+
+    download_model_weights("TheBloke/phi-2-GGUF", &model_files)
+}
+
+/// Verify model files exist
+fn verify_model_files(model_dir: &PathBuf, required_files: &[&str]) -> anyhow::Result<()> {
+    for file_name in required_files {
+        let file_path = model_dir.join(file_name);
+        if !file_path.exists() {
+            anyhow::bail!(
+                "Required model file not found: {}\nExpected at: {}",
+                file_name,
+                file_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// List available models in cache
+fn list_cached_models() -> anyhow::Result<Vec<String>> {
+    let models_dir = get_cache_dir().join("models");
+
+    if !models_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut models = Vec::new();
+
+    for entry in std::fs::read_dir(models_dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            let model_name = entry.file_name().to_string_lossy().to_string();
+            models.push(model_name.replace("--", "/"));
+        }
+    }
+
+    Ok(models)
+}
+
 /// Load the real Llama 3 tokenizer
 fn load_tokenizer() -> anyhow::Result<Tokenizer> {
     let tokenizer_path = download_tokenizer_if_needed()?;
