@@ -340,6 +340,83 @@ impl ModelWorker {
     pub fn has_work(&self) -> bool {
         self.scheduler.has_work()
     }
+
+    /// Get the number of sequences waiting for prefill
+    pub fn waiting_count(&self) -> usize {
+        self.scheduler.waiting_count()
+    }
+
+    /// Get the number of sequences currently running (being decoded)
+    pub fn running_count(&self) -> usize {
+        self.scheduler.running_count()
+    }
+
+    /// Get the total number of sequences (including completed)
+    pub fn total_sequences(&self) -> usize {
+        self.scheduler.total_sequences()
+    }
+
+    /// Get the number of completed sequences
+    pub fn completed_count(&self) -> usize {
+        self.scheduler.completed_count()
+    }
+
+    /// Remove all completed sequences from memory
+    ///
+    /// Essential for long-running workers processing tens of thousands of sequences.
+    /// Call this periodically (e.g., after every batch or every N sequences) to prevent
+    /// memory buildup from completed sequences and their KV caches.
+    ///
+    /// # Returns
+    ///
+    /// The number of sequences removed
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use batching_rs::{ModelConfig, ModelWorker};
+    ///
+    /// let config = ModelConfig::llama3_8b();
+    /// let mut worker = ModelWorker::new(config, 4).unwrap();
+    ///
+    /// // Process sequences...
+    /// // worker.add_sequence(...);
+    /// // worker.run_until_complete().unwrap();
+    ///
+    /// // Clean up completed sequences
+    /// let removed = worker.clear_completed_sequences();
+    /// println!("Removed {} completed sequences", removed);
+    /// ```
+    pub fn clear_completed_sequences(&mut self) -> usize {
+        self.scheduler.clear_completed_sequences()
+    }
+
+    /// Reset the worker to its initial state
+    ///
+    /// This clears all sequences and resets the scheduler. Use this to completely
+    /// reset the worker for a fresh batch of work.
+    ///
+    /// # Warning
+    ///
+    /// This will remove all sequence data. Make sure to retrieve results before calling this.
+    pub fn reset(&mut self) {
+        self.scheduler.reset();
+    }
+
+    /// Get a reference to a sequence by ID
+    ///
+    /// Useful for inspecting sequence state and retrieving generated tokens.
+    ///
+    /// # Arguments
+    ///
+    /// * `seq_id` - The sequence ID
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the sequence is not found
+    pub fn get_sequence(&self, seq_id: SeqId) -> Result<&crate::sequence::Sequence> {
+        self.scheduler.get_sequence(seq_id)
+    }
 }
 
 #[cfg(test)]
@@ -516,5 +593,139 @@ mod tests {
         let result = worker.step().unwrap();
         // Should have 3 results: 2 decodes + 1 prefill
         assert!(result.len() >= 2); // At least the 2 decodes + maybe prefill
+    }
+
+    #[test]
+    fn test_clear_completed_sequences() {
+        let config = ModelConfig::llama3_8b();
+        let mut worker = ModelWorker::new(config, 4).unwrap();
+
+        // Add sequences with small max_new_tokens so they complete quickly
+        worker.add_sequence(vec![1, 2, 3], 2, 999);
+        worker.add_sequence(vec![4, 5, 6], 2, 999);
+
+        // Run until complete
+        worker.run_until_complete().unwrap();
+
+        // All should be completed
+        assert_eq!(worker.completed_count(), 2);
+        assert_eq!(worker.total_sequences(), 2);
+
+        // Clear completed sequences
+        let removed = worker.clear_completed_sequences();
+        assert_eq!(removed, 2);
+        assert_eq!(worker.completed_count(), 0);
+        assert_eq!(worker.total_sequences(), 0);
+    }
+
+    #[test]
+    fn test_worker_reset() {
+        let config = ModelConfig::llama3_8b();
+        let mut worker = ModelWorker::new(config, 4).unwrap();
+
+        // Add and process sequences
+        worker.add_sequence(vec![1, 2, 3], 2, 999);
+        worker.add_sequence(vec![4, 5, 6], 3, 999);
+        worker.step().unwrap();
+
+        assert!(worker.has_work());
+        assert_eq!(worker.total_sequences(), 2);
+
+        // Reset everything
+        worker.reset();
+
+        assert!(!worker.has_work());
+        assert_eq!(worker.total_sequences(), 0);
+        assert_eq!(worker.waiting_count(), 0);
+        assert_eq!(worker.running_count(), 0);
+        assert_eq!(worker.completed_count(), 0);
+
+        // Should be able to add new sequences after reset
+        let new_seq = worker.add_sequence(vec![100], 1, 999);
+        assert_eq!(new_seq, 0); // IDs restart from 0
+    }
+
+    #[test]
+    fn test_high_volume_with_cleanup() {
+        let config = ModelConfig::llama3_8b();
+        let mut worker = ModelWorker::new(config, 4).unwrap();
+
+        // Simulate processing batches with periodic cleanup
+        for batch in 0..10 {
+            // Add 10 sequences per batch
+            for i in 0..10 {
+                worker.add_sequence(vec![batch * 10 + i], 1, 999);
+            }
+
+            // Process the batch
+            worker.run_until_complete().unwrap();
+
+            // Verify all completed
+            assert_eq!(worker.completed_count(), 10);
+
+            // Clean up after each batch
+            let removed = worker.clear_completed_sequences();
+            assert_eq!(removed, 10);
+            assert_eq!(worker.total_sequences(), 0);
+        }
+
+        // After 10 batches of 10 sequences each (100 total), memory should be clean
+        assert_eq!(worker.total_sequences(), 0);
+        assert_eq!(worker.completed_count(), 0);
+    }
+
+    #[test]
+    fn test_get_sequence() {
+        let config = ModelConfig::llama3_8b();
+        let mut worker = ModelWorker::new(config, 4).unwrap();
+
+        let seq_id = worker.add_sequence(vec![1, 2, 3], 5, 999);
+
+        // Should be able to get sequence
+        let seq = worker.get_sequence(seq_id).unwrap();
+        assert_eq!(seq.id, seq_id);
+        assert_eq!(seq.prompt_tokens, vec![1, 2, 3]);
+
+        // After prefill, should have generated tokens
+        worker.step().unwrap();
+        let seq = worker.get_sequence(seq_id).unwrap();
+        assert_eq!(seq.generated_tokens.len(), 1);
+
+        // Invalid seq_id should error
+        assert!(worker.get_sequence(999).is_err());
+    }
+
+    #[test]
+    fn test_worker_counters() {
+        let config = ModelConfig::llama3_8b();
+        let mut worker = ModelWorker::new(config, 4).unwrap();
+
+        // Initially empty
+        assert_eq!(worker.waiting_count(), 0);
+        assert_eq!(worker.running_count(), 0);
+        assert_eq!(worker.completed_count(), 0);
+        assert_eq!(worker.total_sequences(), 0);
+
+        // Add 3 sequences
+        worker.add_sequence(vec![1], 2, 999);
+        worker.add_sequence(vec![2], 2, 999);
+        worker.add_sequence(vec![3], 2, 999);
+
+        assert_eq!(worker.waiting_count(), 3);
+        assert_eq!(worker.total_sequences(), 3);
+
+        // Prefill all 3
+        worker.step().unwrap();
+
+        assert_eq!(worker.waiting_count(), 0);
+        assert_eq!(worker.running_count(), 3);
+        assert_eq!(worker.total_sequences(), 3);
+
+        // Complete all
+        worker.run_until_complete().unwrap();
+
+        assert_eq!(worker.running_count(), 0);
+        assert_eq!(worker.completed_count(), 3);
+        assert_eq!(worker.total_sequences(), 3);
     }
 }

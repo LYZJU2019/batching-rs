@@ -271,6 +271,45 @@ impl Scheduler {
     pub fn total_sequences(&self) -> usize {
         self.sequences.len()
     }
+
+    /// Get the number of completed sequences
+    pub fn completed_count(&self) -> usize {
+        self.sequences
+            .iter()
+            .filter(|(_, seq)| seq.status == crate::sequence::SequenceStatus::Completed)
+            .count()
+    }
+
+    /// Remove all completed sequences from memory
+    ///
+    /// This is essential for long-running workers processing thousands of sequences.
+    /// Call this periodically to prevent memory buildup from completed sequences.
+    ///
+    /// # Returns
+    ///
+    /// The number of sequences removed
+    pub fn clear_completed_sequences(&mut self) -> usize {
+        let initial_count = self.sequences.len();
+        self.sequences
+            .retain(|_, seq| seq.status != crate::sequence::SequenceStatus::Completed);
+        initial_count - self.sequences.len()
+    }
+
+    /// Reset the scheduler to its initial state
+    ///
+    /// This clears all sequences (waiting, running, and completed) and resets
+    /// the sequence ID counter. Use this to completely reset the scheduler
+    /// for a fresh batch of work.
+    ///
+    /// # Warning
+    ///
+    /// This will remove all sequence data. Make sure to retrieve results before calling this.
+    pub fn reset(&mut self) {
+        self.waiting_queue.clear();
+        self.running_batch.clear();
+        self.sequences.clear();
+        self.next_seq_id = 0;
+    }
 }
 
 #[cfg(test)]
@@ -508,5 +547,98 @@ mod tests {
         let mut scheduler = Scheduler::new(4);
         let result = scheduler.add_to_running_batch(999);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_clear_completed_sequences() {
+        let mut scheduler = Scheduler::new(4);
+
+        // Add and complete 3 sequences
+        let seq1 = scheduler.add_sequence(vec![1], 1, 2, 32);
+        let seq2 = scheduler.add_sequence(vec![2], 1, 2, 32);
+        let seq3 = scheduler.add_sequence(vec![3], 1, 2, 32);
+
+        scheduler.add_to_running_batch(seq1).unwrap();
+        scheduler.add_to_running_batch(seq2).unwrap();
+        scheduler.add_to_running_batch(seq3).unwrap();
+
+        scheduler.complete_sequence(seq1).unwrap();
+        scheduler.complete_sequence(seq2).unwrap();
+
+        // seq3 is still running
+        assert_eq!(scheduler.total_sequences(), 3);
+        assert_eq!(scheduler.completed_count(), 2);
+        assert_eq!(scheduler.running_count(), 1);
+
+        // Clear completed sequences
+        let removed = scheduler.clear_completed_sequences();
+        assert_eq!(removed, 2);
+        assert_eq!(scheduler.total_sequences(), 1);
+        assert_eq!(scheduler.completed_count(), 0);
+
+        // seq3 should still be accessible
+        assert!(scheduler.get_sequence(seq3).is_ok());
+
+        // seq1 and seq2 should be gone
+        assert!(scheduler.get_sequence(seq1).is_err());
+        assert!(scheduler.get_sequence(seq2).is_err());
+    }
+
+    #[test]
+    fn test_reset() {
+        let mut scheduler = Scheduler::new(4);
+
+        // Add sequences in various states
+        let seq1 = scheduler.add_sequence(vec![1], 1, 2, 32);
+        let seq2 = scheduler.add_sequence(vec![2], 1, 2, 32);
+        scheduler.add_to_running_batch(seq1).unwrap();
+        scheduler.complete_sequence(seq1).unwrap();
+
+        assert_eq!(scheduler.total_sequences(), 2);
+        assert_eq!(scheduler.waiting_count(), 1);
+        assert_eq!(scheduler.completed_count(), 1);
+
+        // Reset everything
+        scheduler.reset();
+
+        assert_eq!(scheduler.total_sequences(), 0);
+        assert_eq!(scheduler.waiting_count(), 0);
+        assert_eq!(scheduler.running_count(), 0);
+        assert_eq!(scheduler.completed_count(), 0);
+        assert!(!scheduler.has_work());
+
+        // Sequence IDs should restart from 0
+        let new_seq = scheduler.add_sequence(vec![100], 1, 2, 32);
+        assert_eq!(new_seq, 0);
+    }
+
+    #[test]
+    fn test_memory_management_workflow() {
+        let mut scheduler = Scheduler::new(4);
+
+        // Simulate processing batches over time
+        for batch in 0..3 {
+            // Add 4 sequences
+            let mut seq_ids = Vec::new();
+            for i in 0..4 {
+                let seq_id = scheduler.add_sequence(vec![batch * 4 + i], 1, 2, 32);
+                seq_ids.push(seq_id);
+            }
+
+            // Process them
+            for seq_id in &seq_ids {
+                scheduler.add_to_running_batch(*seq_id).unwrap();
+                scheduler.complete_sequence(*seq_id).unwrap();
+            }
+
+            // After each batch, clear completed sequences
+            let removed = scheduler.clear_completed_sequences();
+            assert_eq!(removed, 4);
+            assert_eq!(scheduler.total_sequences(), 0);
+        }
+
+        // After 3 batches, we should have processed 12 sequences total
+        // but memory should be clean
+        assert_eq!(scheduler.total_sequences(), 0);
     }
 }

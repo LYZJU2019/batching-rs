@@ -48,6 +48,7 @@ dependencies = [
  "anyhow",
  "mlx-rs",
  "reqwest",
+ "serde_json",
  "tempfile",
  "thiserror 1.0.69",
  "tokenizers",
