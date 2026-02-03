@@ -57,6 +57,7 @@ pub type Result<T> = std::result::Result<T, BatchingError>;
 
 // Module declarations
 pub mod config;
+pub mod gguf;
 pub mod kv_cache;
 pub mod model;
 pub mod scheduler;
