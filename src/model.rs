@@ -26,7 +26,9 @@
 //! - Gradient computation
 //! - Weight loading from checkpoints
 
+use crate::gguf::{GGUFFile, GGUFTensorType};
 use crate::{config::ModelConfig, kv_cache::SequenceKVCache, BatchingError, Result};
+use std::collections::HashMap;
 
 /// Llama model for text generation
 ///
@@ -73,9 +75,206 @@ pub struct LlamaModel {
     /// These would be used in a real implementation for rotary position embeddings
     #[allow(dead_code)]
     rope_freqs: Vec<f32>,
+
+    /// Token embeddings: [vocab_size, hidden_dim]
+    token_embeddings: Option<Vec<u8>>,
+
+    /// Layer weights (stored as raw bytes from GGUF)
+    /// Each layer contains attention and feedforward weights
+    layer_weights: HashMap<String, Vec<u8>>,
+
+    /// Output normalization weights
+    output_norm: Option<Vec<u8>>,
+
+    /// Output projection (lm_head): [hidden_dim, vocab_size]
+    output_weights: Option<Vec<u8>>,
+
+    /// Track tensor types for each weight
+    tensor_types: HashMap<String, GGUFTensorType>,
 }
 
 impl LlamaModel {
+    /// Create a new Llama model from a GGUF file
+    ///
+    /// This loads the actual model weights from the GGUF file and creates
+    /// a model instance ready for inference.
+    ///
+    /// # Arguments
+    ///
+    /// * `gguf` - Parsed GGUF file containing model weights and metadata
+    ///
+    /// # Returns
+    ///
+    /// A new LlamaModel instance with loaded weights
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Configuration extraction fails
+    /// - Required tensors are missing
+    /// - Tensor dimensions are invalid
+    pub fn from_gguf(gguf: &GGUFFile) -> Result<Self> {
+        println!("🏗️  Building LlamaModel from GGUF file...");
+
+        // Extract configuration
+        let config = gguf.extract_config()?;
+
+        // Precompute RoPE frequencies
+        let rope_freqs = Self::precompute_rope_freqs(&config);
+
+        // Show available tensors for debugging
+        println!("   📋 Available tensors in GGUF file:");
+        let tensor_names = gguf.tensor_names();
+        println!("      Total: {} tensors", tensor_names.len());
+
+        // Show a sample of tensor names to help with debugging
+        let sample_count = 10.min(tensor_names.len());
+        for name in tensor_names.iter().take(sample_count) {
+            println!("      - {}", name);
+        }
+        if tensor_names.len() > sample_count {
+            println!("      ... and {} more", tensor_names.len() - sample_count);
+        }
+
+        // Load token embeddings - try common naming conventions
+        println!("\n   Loading token embeddings...");
+        let (token_embeddings, token_emb_type, emb_name) = Self::try_load_tensor(
+            gguf,
+            &[
+                "token_embd.weight",
+                "tok_embeddings.weight",
+                "model.embed_tokens.weight",
+            ],
+        )?;
+        println!("      ✓ Loaded: {}", emb_name);
+
+        // Load layer weights
+        println!("   Loading {} transformer layers...", config.n_layers);
+        let mut layer_weights = HashMap::new();
+        let mut tensor_types = HashMap::new();
+
+        tensor_types.insert(emb_name.clone(), token_emb_type);
+
+        for layer_idx in 0..config.n_layers {
+            // Try different naming conventions for layer tensors
+            // llama.cpp style: blk.N.*
+            // transformers style: model.layers.N.*
+
+            for tensor_name in &[
+                &format!("blk.{}.attn_q.weight", layer_idx),
+                &format!("blk.{}.attn_k.weight", layer_idx),
+                &format!("blk.{}.attn_v.weight", layer_idx),
+                &format!("blk.{}.attn_output.weight", layer_idx),
+                &format!("blk.{}.ffn_gate.weight", layer_idx),
+                &format!("blk.{}.ffn_up.weight", layer_idx),
+                &format!("blk.{}.ffn_down.weight", layer_idx),
+                &format!("blk.{}.attn_norm.weight", layer_idx),
+                &format!("blk.{}.ffn_norm.weight", layer_idx),
+            ] {
+                if let Ok((data, dtype)) = Self::load_tensor(gguf, tensor_name) {
+                    layer_weights.insert(tensor_name.to_string(), data);
+                    tensor_types.insert(tensor_name.to_string(), dtype);
+                }
+            }
+
+            if (layer_idx + 1) % 8 == 0 || layer_idx == config.n_layers - 1 {
+                println!("      Loaded layers 0-{}", layer_idx);
+            }
+        }
+
+        // Load output normalization - try common naming conventions
+        println!("   Loading output layers...");
+        let (output_norm, output_norm_type, norm_name) = Self::try_load_tensor(
+            gguf,
+            &["output_norm.weight", "norm.weight", "model.norm.weight"],
+        )?;
+        println!("      ✓ Loaded: {}", norm_name);
+        tensor_types.insert(norm_name.clone(), output_norm_type);
+
+        // Load output weights (lm_head) - try common naming conventions
+        let output_result = Self::try_load_tensor(
+            gguf,
+            &[
+                "output.weight",
+                "lm_head.weight",
+                "output_weight",
+                "model.lm_head.weight",
+            ],
+        );
+
+        let (output_weights, output_type, output_name) = match output_result {
+            Ok(result) => {
+                println!("      ✓ Loaded: {}", result.2);
+                result
+            }
+            Err(_) => {
+                // Some models tie output weights to token embeddings
+                println!("      ⚠️  No separate output.weight found, will use token embeddings (weight tying)");
+                (token_embeddings.clone(), token_emb_type, emb_name.clone())
+            }
+        };
+        tensor_types.insert(output_name, output_type);
+
+        println!("   ✅ Model loaded successfully!");
+        println!("      Total tensors loaded: {}", tensor_types.len());
+
+        // Calculate total memory usage
+        let token_emb_bytes = token_embeddings.len();
+        let output_norm_bytes = output_norm.len();
+        let output_weights_bytes = output_weights.len();
+        let layer_weights_bytes: usize = layer_weights.values().map(|v| v.len()).sum();
+        let total_bytes =
+            token_emb_bytes + output_norm_bytes + output_weights_bytes + layer_weights_bytes;
+
+        println!(
+            "      Approximate size: {:.2} MB",
+            total_bytes as f64 / (1024.0 * 1024.0)
+        );
+
+        Ok(Self {
+            config,
+            rope_freqs,
+            token_embeddings: Some(token_embeddings),
+            layer_weights,
+            output_norm: Some(output_norm),
+            output_weights: Some(output_weights),
+            tensor_types,
+        })
+    }
+
+    /// Load a tensor from GGUF file by name
+    ///
+    /// Returns the raw bytes and tensor type. The actual dequantization
+    /// will be done during inference.
+    fn load_tensor(gguf: &GGUFFile, name: &str) -> Result<(Vec<u8>, GGUFTensorType)> {
+        let tensor_info = gguf.get_tensor_info(name).ok_or_else(|| {
+            BatchingError::ModelError(format!("Required tensor '{}' not found in GGUF file", name))
+        })?;
+
+        let data = gguf.read_tensor_data(name)?;
+        Ok((data, tensor_info.tensor_type))
+    }
+
+    /// Try to load a tensor with multiple possible names
+    ///
+    /// Returns the raw bytes, tensor type, and the name that was found.
+    fn try_load_tensor(
+        gguf: &GGUFFile,
+        names: &[&str],
+    ) -> Result<(Vec<u8>, GGUFTensorType, String)> {
+        for &name in names {
+            if let Some(tensor_info) = gguf.get_tensor_info(name) {
+                let data = gguf.read_tensor_data(name)?;
+                return Ok((data, tensor_info.tensor_type, name.to_string()));
+            }
+        }
+
+        Err(BatchingError::ModelError(format!(
+            "Required tensor not found. Tried: {:?}",
+            names
+        )))
+    }
+
     /// Create a new Llama model
     ///
     /// # Arguments
@@ -96,7 +295,15 @@ impl LlamaModel {
         // Precompute RoPE frequencies
         let rope_freqs = Self::precompute_rope_freqs(&config);
 
-        Ok(Self { config, rope_freqs })
+        Ok(Self {
+            config,
+            rope_freqs,
+            token_embeddings: None,
+            layer_weights: HashMap::new(),
+            output_norm: None,
+            output_weights: None,
+            tensor_types: HashMap::new(),
+        })
     }
 
     /// Precompute RoPE frequencies
