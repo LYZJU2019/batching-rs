@@ -62,14 +62,17 @@ pub mod kv_cache;
 pub mod model;
 pub mod scheduler;
 pub mod sequence;
+pub mod tokenizer;
 pub mod worker;
 
 // Re-exports
 pub use config::ModelConfig;
+pub use gguf::GGUFFile;
 pub use kv_cache::{LayerKVCache, SequenceKVCache};
 pub use model::LlamaModel;
 pub use scheduler::{Scheduler, SchedulerDecision};
 pub use sequence::{SeqId, Sequence, SequenceStatus};
+pub use tokenizer::Tokenizer;
 pub use worker::{GeneratedToken, ModelWorker};
 
 #[cfg(test)]

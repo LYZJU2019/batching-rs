@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0"
 thiserror = "1.0"
+tokenizers = "0.20"  # HuggingFace tokenizers for Llama
+chrono = "0.4"  # For date formatting in chat templates
 
 # MLX for actual model implementation
 mlx-rs = { version = "0.25", optional = true }
@@ -13,7 +15,6 @@ serde_json = "1.0.149"
 
 [dev-dependencies]
 # For integration tests with real models
-tokenizers = "0.20"  # HuggingFace tokenizers for Llama
 reqwest = { version = "0.12", features = ["blocking"] }  # For downloading models
 tempfile = "3.0"  # For temporary model storage
 
